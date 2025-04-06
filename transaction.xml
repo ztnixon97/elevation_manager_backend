@@ -1,0 +1,15 @@
+
+<wfs:Transaction service="WFS" version="2.0.0"
+    xmlns:wfs="http://www.opengis.net/wfs/2.0"
+    xmlns:gml="http://www.opengis.net/gml/3.2">
+    <wfs:Insert>
+        <wfs:products>
+            <wfs:status>Testing</wfs:status>
+            <wfs:geom>
+                <gml:Point srsName="EPSG:4326">
+                    <gml:pos>-77.0369 38.9072</gml:pos>
+                </gml:Point>
+            </wfs:geom>
+        </wfs:products>
+    </wfs:Insert>
+</wfs:Transaction>

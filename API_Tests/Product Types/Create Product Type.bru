@@ -1,0 +1,110 @@
+meta {
+  name: Create Product Type
+  type: http
+  seq: 2
+}
+
+post {
+  url: http://127.0.0.1:3000/product_types
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "name": "test_product",
+    "acronym" : "test"
+  }
+}
+
+docs {
+  # **POST** `/product_types`
+  
+  Creates a new product type record in the database.
+  
+  ## Request
+  
+  **Endpoint:**
+  ```
+  POST /product_types
+  ```
+  
+  **Headers:**
+  - `Content-Type: application/json`
+  - *(Optional)* `Authorization: Bearer <token>` (if authentication is required)
+  
+  **Body (JSON):**
+  ```json
+  {
+    "name": "example_name",
+    "acronym": "EX"
+  }
+  ```
+  | Field | Type   | Required? | Description                    |
+  |-------|--------|----------|--------------------------------|
+  | **name**  | `string` | **Yes**  | The name of the product type. |
+  | **acronym**  | `string` | **Yes**  | The acronym representing the product type. |
+  
+  ---
+  
+  ## Success Response
+  
+  **HTTP Status:** **201 Created**
+  
+  **Example Body:**
+  ```json
+  {
+    "success": true,
+    "status_code": 201,
+    "message": "Product type created successfully",
+    "timestamp": "2025-03-15T15:34:00Z",
+    "data": 42
+  }
+  ```
+  
+  | Field         | Type     | Description                                                 |
+  |---------------|----------|-------------------------------------------------------------|
+  | **success**   | `bool`   | Indicates if the operation was successful (`true`).         |
+  | **status_code** | `number` | Mirrors the HTTP status code (201 = Created).              |
+  | **message**   | `string` | Human-readable message about the result.                    |
+  | **timestamp** | `string` | Timestamp in ISO8601 format.                                |
+  | **data**      | `number` | Auto-generated ID of the new product type (e.g., `42`).     |
+  
+  ---
+  
+  ## Error Responses
+  
+  If an error occurs (e.g., database error, validation issue), a non-2xx status code is returned with an error JSON body.
+  
+  ### Example 500 response:
+  ```json
+  {
+    "success": false,
+    "status_code": 500,
+    "message": "Unable to create product type",
+    "timestamp": "2025-03-15T02:34:31.264736700+00:00",
+    "errors": {
+      "message": "Database error: invalid syntax near input"
+    }
+  }
+  ```
+  
+  | Field          | Type     | Description                                          |
+  |----------------|----------|------------------------------------------------------|
+  | **success**    | `bool`   | Indicates the operation was unsuccessful (`false`).  |
+  | **status_code**| `number` | Mirrors the HTTP status code (e.g., `500`).          |
+  | **message**    | `string` | A short error message.                               |
+  | **timestamp**  | `string` | Timestamp in ISO8601 format.                         |
+  | **errors**     | `object` | Detailed error info.                                 |
+  | **errors.message** | `string` | Specific error details.                         |
+  
+  ---
+  
+  ## Additional Notes
+  
+  - **Validation**: If the `name` or `acronym` field is omitted or empty, the server may respond with `400 Bad Request` and an appropriate validation error.
+  - **Authentication**: If your app requires authentication (JWT, etc.), calls without valid credentials might return `401 Unauthorized`.
+  - **Conflict**: If `name` or `acronym` must be unique and already exists, the server may respond with `409 Conflict`. 
+  
+  
+}

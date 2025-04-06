@@ -1,0 +1,38 @@
+meta {
+  name: Create Product
+  type: http
+  seq: 2
+}
+
+post {
+  url: http://127.0.0.1:3000/products
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "taskorder_id": null,
+    "item_id": "Test",
+    "site_id": "Test",
+    "product_type_id": 1,
+    "status": "pending",
+    "status_date": "2024-03-12",
+    "acceptance_date": "2024-03-13",
+    "publish_date": "2024-03-14",
+    "file_path": "/data/product002.tif",
+    "geom": {
+      "type": "Polygon",
+      "coordinates": [
+        [
+          [ -73.985428, 40.748817 ],
+          [ -73.986428, 40.748817 ],
+          [ -73.986428, 40.747817 ],
+          [ -73.985428, 40.747817 ],
+          [ -73.985428, 40.748817 ]
+        ]
+      ]
+    }
+  }
+  
+}

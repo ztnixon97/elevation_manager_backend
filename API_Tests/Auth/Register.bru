@@ -1,0 +1,19 @@
+meta {
+  name: Register
+  type: http
+  seq: 2
+}
+
+post {
+  url: http://127.0.0.1:3000/auth/register
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+      "username" : "testuser",
+      "password": "securepassword123",
+      "role": "admin"
+  }
+}
