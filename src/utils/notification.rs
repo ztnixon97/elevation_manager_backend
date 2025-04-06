@@ -176,7 +176,7 @@ impl NotificationBuilder {
             
             // Use raw query to avoid type casting issues
             sqlx::query(
-                "INSERT INTO notification_targets (notification_id, scope, target_id) VALUES ($1, $2, $3)"
+                "INSERT INTO notification_targets (notification_id, scope, target_id) VALUES ($1, $2::notification_scope, $3)"
             )
             .bind(notification_id)
             .bind(scope_str)

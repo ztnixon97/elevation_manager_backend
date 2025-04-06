@@ -89,7 +89,7 @@ pub async fn create_notification(
         
         // Fixed query to convert string to enum type
         sqlx::query(
-            "INSERT INTO notification_targets(notification_id, scope, target_id) VALUES ($1, $2, $3)"
+            "INSERT INTO notification_targets(notification_id, scope, target_id) VALUES ($1, $2::notification_scope, $3)"
         )
         .bind(notification_id)
         .bind(scope_str)
