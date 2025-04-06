@@ -11,7 +11,8 @@ use crate::api::auth::Claims;
 use crate::db::models::notification::{
     Notification, NotificationTarget, NotificationDismissal, 
     NewNotification, UpdateNotification, NotificationFilter,
-    NotificationWithTargets, NotificationCountResponse, NotificationScope
+    NotificationWithTargets, NotificationCountResponse, NotificationScope,
+    NotificationTargetInput
 };
 use crate::utils::api_response::ApiResponse;
 
@@ -87,15 +88,12 @@ pub async fn create_notification(
         };
         
         // Fixed query to convert string to enum type
-        sqlx::query!(
-            r#"
-            INSERT INTO notification_targets (notification_id, scope, target_id)
-            VALUES ($1, $2::notification_scope, $3)
-            "#,
-            notification_id,
-            scope_str,
-            target.target_id
+        sqlx::query(
+            "INSERT INTO notification_targets(notification_id, scope, target_id) VALUES ($1, $2, $3)"
         )
+        .bind(notification_id)
+        .bind(scope_str)
+        .bind(target.target_id)
         .execute(&mut *tx)
         .await
         .map_err(|e| ApiResponse::<()>::error(
@@ -380,8 +378,8 @@ pub async fn get_notification(
             type_field: n.type_field,
             action_type: n.action_type,
             action_data: n.action_data,
-            global: n.global,
-            dismissible: n.dismissible,
+            global: n.global.unwrap_or(false),
+            dismissible: n.dismissible.unwrap_or(true),
             created_at: n.created_at,
             expires_at: n.expires_at,
         },
@@ -800,7 +798,6 @@ pub async fn dismiss_all_notifications(
     }
     
     // Insert dismissals for all relevant notifications
-// Insert dismissals for all relevant notifications
     let notification_ids: Vec<i32> = dismissible_notifications.iter().map(|r| r.id).collect();
     
     let mut tx = pool.begin().await.map_err(|e| ApiResponse::<()>::error(
@@ -1014,6 +1011,7 @@ use utoipa::OpenApi;
             NotificationTargetInput,
             UpdateNotification,
             NotificationFilter,
+            NotificationTargetInput,
             NotificationWithTargets,
             NotificationCountResponse,
             NotificationScope

@@ -65,7 +65,6 @@ pub struct NotificationTargetInput {
     pub scope: NotificationScope,
     pub target_id: i32,
 }
-
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct UpdateNotification {
     pub title: Option<String>,

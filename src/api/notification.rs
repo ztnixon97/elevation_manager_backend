@@ -18,13 +18,13 @@ pub fn notification_routes() -> Router<PgPool> {
             post(dismiss_all_notifications),
         )
         .route(
-            "/notifications/:notification_id",
+            "/notifications/{notification_id}",
             get(get_notification)
                 .patch(update_notification)
                 .delete(delete_notification),
         )
         .route(
-            "/notifications/:notification_id/dismiss",
+            "/notifications/{notification_id}/dismiss",
             post(dismiss_notification),
         )
 }

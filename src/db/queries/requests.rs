@@ -38,6 +38,10 @@ pub async fn create_approval_request(
     Extension(claims): Extension<Claims>,
     Json(payload): Json<NewApprovalRequest>,
 ) -> Result<ApiResponse<ApprovalRequest>, ApiResponse<()>> {
+    // Parse user_id from claims
+    let user_id = claims.sub.parse::<i32>().unwrap_or_default();
+    
+    // Check for duplicates
     let duplicate_exists = sqlx::query_scalar!(
         r#"
         SELECT EXISTS(
@@ -46,7 +50,7 @@ pub async fn create_approval_request(
         )
         "#,
         payload.request_type as _,
-        claims.sub.parse::<i32>().unwrap_or_default(),
+        user_id,
         payload.target_id
     )
     .fetch_one(&pool)
@@ -62,6 +66,14 @@ pub async fn create_approval_request(
         ));
     }
 
+    // Start a transaction for atomic operations
+    let mut tx = pool.begin().await.map_err(|e| ApiResponse::<()>::error(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Failed to start transaction",
+        Some(json!({"error": e.to_string()}))
+    ))?;
+
+    // Insert the approval request
     let result = sqlx::query_as!(
         ApprovalRequest,
         r#"
@@ -70,18 +82,89 @@ pub async fn create_approval_request(
         RETURNING id, request_type as "request_type!: ApprovalRequestType", requested_by, target_id, details, status as "status!: ApprovalStatus", reviewed_by, requested_at, reviewed_at
         "#,
         payload.request_type as _,
-        claims.sub.parse::<i32>().unwrap_or_default(),
+        user_id,
         payload.target_id,
         payload.details
     )
-    .fetch_one(&pool)
+    .fetch_one(&mut *tx)
     .await
-    .map_err(|e| ApiResponse::<()>::error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to insert approval request", Some(json!({"error": e.to_string()}))))?;
+    .map_err(|e| ApiResponse::<()>::error(
+        StatusCode::INTERNAL_SERVER_ERROR, 
+        "Failed to insert approval request", 
+        Some(json!({"error": e.to_string()}))
+    ))?;
+
+    // Handle notifications for specific request types
+    match result.request_type {
+        ApprovalRequestType::TeamJoin => {
+            // Check if this is a team join request
+            if let Some(team_id) = result.target_id {
+                // Get the role from details
+                let role = result.details.get("role")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("member")
+                    .to_string();
+
+                // Get user info for the notification
+                let user = sqlx::query!(
+                    "SELECT username FROM users WHERE id = $1",
+                    user_id
+                )
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|e| ApiResponse::<()>::error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to retrieve user details",
+                    Some(json!({"error": e.to_string()}))
+                ))?;
+
+                // Get team name for the notification
+                let team = sqlx::query!(
+                    "SELECT name FROM teams WHERE id = $1",
+                    team_id
+                )
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|e| ApiResponse::<()>::error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to retrieve team details",
+                    Some(json!({"error": e.to_string()}))
+                ))?;
+
+                // Create notification
+                use crate::utils::notification;
+                notification::notify_team_access_request(
+                    &pool, // Use the pool directly, not the transaction
+                    user_id,
+                    &user.username,
+                    team_id,
+                    &team.name,
+                    &role,
+                    result.id,
+                )
+                .await
+                .map_err(|e| ApiResponse::<()>::error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to create notification",
+                    Some(json!({"error": e.to_string()}))
+                ))?;
+            }
+        },
+        // Add handlers for other request types as needed
+        _ => {
+            // No special notification handling for other request types
+        }
+    }
+
+    // Commit the transaction
+    tx.commit().await.map_err(|e| ApiResponse::<()>::error(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Failed to commit transaction",
+        Some(json!({"error": e.to_string()}))
+    ))?;
 
     Ok(ApiResponse::success(StatusCode::CREATED, "Approval request created", result))
 }
-
-
 
 pub async fn get_approval_request_by_id(
     pool: &PgPool,
@@ -206,6 +289,7 @@ pub async fn update_approval_status(
     match request.request_type {
         ApprovalRequestType::TeamJoin => {
             handle_team_join_approval(&pool, &user_permissions, reviewer_id, &request, status.clone()).await?;
+            // Notification builder for crating system notification
         }
         _ => {
             return Err(ApiResponse::<()>::error(
@@ -294,6 +378,70 @@ async fn handle_team_join_approval(
             Some(json!({"error": e.to_string()})),
         ))?;
     }
+
+    Ok(())
+}
+
+/// Handle a team access request and create relevant notifications
+async fn handle_team_access_request(
+    pool: &PgPool,
+    user_id: i32,
+    team_id: i32,
+    role: &str,
+    request_id: i32,
+) -> Result<(), ApiResponse<()>> {
+    // Verify the user and team exist
+    let user = sqlx::query!(
+        "SELECT username FROM users WHERE id = $1",
+        user_id
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| ApiResponse::<()>::error(
+        StatusCode::INTERNAL_SERVER_ERROR, 
+        "Database error", 
+        Some(json!({"error": e.to_string()}))
+    ))?
+    .ok_or_else(|| ApiResponse::<()>::error(
+        StatusCode::NOT_FOUND,
+        "User not found",
+        None
+    ))?;
+
+    let team = sqlx::query!(
+        "SELECT name FROM teams WHERE id = $1",
+        team_id
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| ApiResponse::<()>::error(
+        StatusCode::INTERNAL_SERVER_ERROR, 
+        "Database error", 
+        Some(json!({"error": e.to_string()}))
+    ))?
+    .ok_or_else(|| ApiResponse::<()>::error(
+        StatusCode::NOT_FOUND,
+        "Team not found",
+        None
+    ))?;
+
+    // Create notification for team leads
+    use crate::utils::notification;
+    notification::notify_team_access_request(
+        pool,
+        user_id,
+        &user.username,
+        team_id,
+        &team.name,
+        role,
+        request_id,
+    )
+    .await
+    .map_err(|e| ApiResponse::<()>::error(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Failed to create notification",
+        Some(json!({ "error": e.to_string() }))
+    ))?;
 
     Ok(())
 }
