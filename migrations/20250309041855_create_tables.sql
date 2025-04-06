@@ -243,3 +243,37 @@ CREATE TABLE approval_requests (
   reviewed_at TIMESTAMP
 );
 
+CREATE TABLE notifications (
+    id SERIAL PRIMARY KEY,
+    title TEXT NOT NULL,
+    body TEXT,
+    type TEXT NOT NULL DEFAULT 'info',  -- 'info', 'success', 'warning', etc.
+    action_type TEXT,                   -- frontend-defined action, e.g., 'open_review'
+    action_data JSONB,                  -- e.g., { "review_id": 123 }
+    global BOOLEAN DEFAULT false,
+    dismissible BOOLEAN DEFAULT true,
+    created_at TIMESTAMP NOT NULL DEFAULT now(),
+    expires_at TIMESTAMP               -- optional
+);
+
+
+
+CREATE TYPE notification_scope AS ENUM ('user', 'team', 'team_leads');
+
+CREATE TABLE notification_targets (
+    id SERIAL PRIMARY KEY,
+    notification_id INT NOT NULL REFERENCES notifications(id) ON DELETE CASCADE,
+    scope notification_scope NOT NULL,
+    target_id INT NOT NULL              -- interpreted based on scope:
+                                        -- user_id if scope = 'user'
+                                        -- team_id if scope = 'team' or 'team_leads'
+);
+
+
+CREATE TABLE notification_dismissals (
+    id SERIAL PRIMARY KEY,
+    notification_id INT NOT NULL REFERENCES notifications(id) ON DELETE CASCADE,
+    user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    dismissed_at TIMESTAMP NOT NULL DEFAULT now(),
+    UNIQUE (notification_id, user_id)
+);
