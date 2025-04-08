@@ -258,5 +258,32 @@ async fn fetch_rbac_from_db(user_id: i32, pool: &PgPool) -> Result<UserPermissio
 
     let global_role = rows.first().map_or("user".to_string(), |r| r.global_role.clone());
 
-    Ok(UserPermissions { user_id, global_role, teams: HashMap::new(), task_order_permissions: HashMap::new(), product_type_permissions: HashMap::new(), explicit_product_permissions: HashMap::new() })
+    let mut teams = HashMap::new();
+    let mut task_order_permissions = HashMap::new();
+    let mut product_type_permissions = HashMap::new();
+    let mut explicit_product_permissions = HashMap::new();
+
+    for row in rows {
+        if let (Some(team_id), Some(team_role)) = (row.team_id, row.team_role.clone()) {
+            teams.entry(team_id).or_insert(team_role);
+        }
+        if let Some(task_order_id) = row.task_order_id {
+            task_order_permissions.entry(task_order_id).or_insert("viewer".to_string());
+        }
+        if let Some(product_type_id) = row.product_type_id {
+            product_type_permissions.entry(product_type_id).or_insert("viewer".to_string());
+        }
+        if let (Some(product_id), Some(role)) = (row.explicit_product_id, row.explicit_product_role.clone()) {
+            explicit_product_permissions.entry(product_id).or_insert(role);
+        }
+    }
+
+    Ok(UserPermissions {
+        user_id,
+        global_role,
+        teams,
+        task_order_permissions,
+        product_type_permissions,
+        explicit_product_permissions,
+    })
 }

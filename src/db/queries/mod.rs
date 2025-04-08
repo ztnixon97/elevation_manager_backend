@@ -6,3 +6,4 @@ pub mod review;
 pub mod taskorder;
 pub mod team;
 pub mod user;
+pub mod product_assignments;

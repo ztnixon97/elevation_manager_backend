@@ -339,7 +339,7 @@ pub async fn get_team_members(
     }
 
     // ✅ Ensure user has permission
-    if !user_permissions.is_admin() && !user_permissions.is_manager() && !user_permissions.is_team_lead(team_id) {
+    if !user_permissions.is_admin() && !user_permissions.is_manager() && !user_permissions.is_on_team(team_id) {
         return Err(ApiResponse::error(StatusCode::FORBIDDEN, "You do not have permission to view team members", None));
     }
 

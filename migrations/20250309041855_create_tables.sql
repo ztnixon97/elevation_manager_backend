@@ -256,8 +256,6 @@ CREATE TABLE notifications (
     expires_at TIMESTAMP               -- optional
 );
 
-
-
 CREATE TYPE notification_scope AS ENUM ('user', 'team', 'team_leads');
 
 CREATE TABLE notification_targets (
@@ -269,7 +267,6 @@ CREATE TABLE notification_targets (
                                         -- team_id if scope = 'team' or 'team_leads'
 );
 
-
 CREATE TABLE notification_dismissals (
     id SERIAL PRIMARY KEY,
     notification_id INT NOT NULL REFERENCES notifications(id) ON DELETE CASCADE,
@@ -277,3 +274,23 @@ CREATE TABLE notification_dismissals (
     dismissed_at TIMESTAMP NOT NULL DEFAULT now(),
     UNIQUE (notification_id, user_id)
 );
+
+
+CREATE TABLE product_assignments (
+    id SERIAL PRIMARY KEY,
+    product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    team_id INTEGER REFERENCES teams(id) ON DELETE CASCADE,
+    assignment_type TEXT CHECK (assignment_type IN ('assigned', 'checked_out')) NOT NULL,
+    status TEXT CHECK (status IN ('active', 'completed', 'cancelled')) NOT NULL DEFAULT 'active',
+    assigned_by INTEGER REFERENCES users(id),
+    assigned_at TIMESTAMP DEFAULT now() NOT NULL,
+    due_date TIMESTAMP,
+    reason TEXT,
+    completed_at TIMESTAMP
+);
+
+
+CREATE UNIQUE INDEX unique_active_assignment
+ON product_assignments(product_id, user_id)
+WHERE status = 'active';

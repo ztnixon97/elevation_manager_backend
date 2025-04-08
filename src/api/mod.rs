@@ -11,3 +11,4 @@ pub mod taskorder;
 pub mod team;
 pub mod user;
 pub mod wfs;
+pub mod product_assignments;

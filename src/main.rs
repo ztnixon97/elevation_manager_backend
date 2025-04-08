@@ -7,6 +7,7 @@ use axum::{routing::get, Router};
 use axum::middleware::{from_fn, from_fn_with_state};
 use db::queries::contract::ContractDoc;
 use db::queries::notification::NotificationDoc;
+use db::queries::product_assignments::AssignmentApiDoc;
 use db::queries::taskorder::TaskOrderDoc;
 use db::queries::team::TeamDoc;
 use db::queries::user::UserDoc;
@@ -168,6 +169,7 @@ async fn main() {
         .merge_from(UserDoc::openapi())
         .merge_from(TaskOrderDoc::openapi())
         .merge_from(NotificationDoc::openapi())
+        .merge_from(AssignmentApiDoc::openapi())
         .merge_from(RequestDoc::openapi());
 
     #[cfg(feature = "tui-support")]
@@ -194,6 +196,7 @@ async fn main() {
     .merge(api::user::user_routes())
     .merge(api::requests::request_routes())
     .merge(api::notification::notification_routes())
+    .merge(api::product_assignments::assignment_routes())
     .merge(graphql_routes(graphql_schema)) // secured POST route
     .route_layer(from_fn_with_state(pool.clone(), rbac_middleware))
     .route_layer(from_fn(jwt_middleware));
