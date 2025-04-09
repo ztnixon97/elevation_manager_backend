@@ -107,10 +107,13 @@ pub async fn create_user_assignment(
     let product_name = get_product_name(&pool, new_assignment.product_id).await
         .unwrap_or_else(|_| format!("Product #{}", new_assignment.product_id));
         
+    let team_name = get_team_name(&pool,new_assignment.team_id).await
+        .unwrap_or_else(|_| format!("Team #{}", new_assignment.team_id));
     let _ = create_assignment_notification(
         &pool,
         new_assignment.user_id,
         &product_name,
+        &team_name,
         &claims.username,
         result.id,
         &new_assignment.assignment_type,
@@ -128,13 +131,14 @@ async fn create_assignment_notification(
     pool : &PgPool,
     user_id: i32,
     product_name : &str,
+    team_name: &str,
     assigned_by: &str,
     assignment_id: i32,
     assignment_type: &str,
 ) -> Result<(), sqlx::Error> {
     let notification_title = match assignment_type {
-        "assigned" => format!("Product Assignment: {product_name}"),
-        "checkhout" => format!("Product Checkout: {product_name}"),
+        "assigned" => format!("{team_name}: Product Assignment: {product_name}"),
+        "checkout" => format!("{team_name}: Product Checkout: {product_name}"),
         _ => format!("Product Assignment: {product_name}"),
     };
 
@@ -198,6 +202,18 @@ async fn get_product_name(pool: &PgPool, product_id: i32) -> Result<String, sqlx
     .await?;
     
     Ok(result.map(|r| r.site_id).unwrap_or_else(|| format!("Product #{}", product_id)))
+}
+
+// Helper function to get team name
+async fn get_team_name(pool: &PgPool, team_id: i32) -> Result<String, sqlx::Error> {
+    let result = sqlx::query!(
+        "SELECT name FROM teams WHERE id = $1",
+        team_id
+    )
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(result.map(|r| r.name).unwrap_or_else(|| format!("Team #{}", team_id)))
 }
 
 #[utoipa::path(
