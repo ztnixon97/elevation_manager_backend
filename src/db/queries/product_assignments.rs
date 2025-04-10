@@ -34,6 +34,13 @@ pub async fn create_user_assignment(
     Json(new_assignment): Json<NewProductAssignment>,
 ) -> Result<ApiResponse<ProductAssignment>, ApiResponse<()>> {
 
+    let status = new_assignment.status.unwrap_or_else(|| "active".to_string());
+    let assigned_by = new_assignment
+        .assigned_by
+        .unwrap_or_else(|| claims.user_id().unwrap_or(0));
+    let now = chrono::Utc::now().naive_utc();
+
+    // Permissions check
     if !user_permissions.can_edit_product(new_assignment.product_id) {
         return Err(ApiResponse::<()>::error(
             StatusCode::FORBIDDEN,
@@ -42,7 +49,7 @@ pub async fn create_user_assignment(
         ));
     }
 
-    if let Some(team_id) = new_assignment.team_id {
+    let team_name = if let Some(team_id) = new_assignment.team_id {
         if !user_permissions.is_team_lead(team_id) {
             return Err(ApiResponse::<()>::error(
                 StatusCode::FORBIDDEN,
@@ -50,11 +57,14 @@ pub async fn create_user_assignment(
                 None,
             ));
         }
-    }
-    
-    let status = new_assignment.status.unwrap_or_else(|| "active".to_string());
-    let assigned_by = new_assignment.assigned_by.unwrap_or_else(|| claims.user_id().unwrap_or(0));
-    let now = chrono::Utc::now().naive_utc();
+
+        // Safe to unwrap here because we already checked team_id is Some
+        get_team_name(&pool, team_id)
+            .await
+            .unwrap_or_else(|_| format!("Team #{}", team_id))
+    } else {
+        "Unassigned".to_string()
+    };
 
     // Insert the assignment into the database
     let result = sqlx::query_as!(
@@ -91,7 +101,7 @@ pub async fn create_user_assignment(
         new_assignment.assignment_type,
         status,
         assigned_by,
-        now as NaiveDateTime,
+        now,
         new_assignment.due_date,
         new_assignment.reason
     )
@@ -104,11 +114,10 @@ pub async fn create_user_assignment(
     ))?;
 
     // Create a notification for the assigned user
-    let product_name = get_product_name(&pool, new_assignment.product_id).await
+    let product_name = get_product_name(&pool, new_assignment.product_id)
+        .await
         .unwrap_or_else(|_| format!("Product #{}", new_assignment.product_id));
-        
-    let team_name = get_team_name(&pool,new_assignment.team_id).await
-        .unwrap_or_else(|_| format!("Team #{}", new_assignment.team_id));
+
     let _ = create_assignment_notification(
         &pool,
         new_assignment.user_id,
@@ -117,15 +126,15 @@ pub async fn create_user_assignment(
         &claims.username,
         result.id,
         &new_assignment.assignment_type,
-    ).await;
+    )
+    .await;
 
     Ok(ApiResponse::success(
         StatusCode::CREATED,
         "Product assignment created successfully",
-        result
+        result,
     ))
 }
-
 
 async fn create_assignment_notification(
     pool : &PgPool,

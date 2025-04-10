@@ -121,6 +121,8 @@ pub struct TeamProductResponse {
     pub publish_date: Option<chrono::NaiveDate>,
     pub product_type_id: i32,
     pub s2_index: Option<String>,
+    pub assignment_types: Vec<String>,
+    pub assigned_to: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, IntoParams, ToSchema)]
@@ -184,4 +186,28 @@ pub struct NewProductType {
 #[derive(Serialize, Deserialize, Debug, ToSchema)]
 pub struct ProductIdResponse {
     pub id: i32,
+}
+
+#[derive(Serialize, Deserialize, sqlx::FromRow, utoipa::ToSchema)]
+pub struct AssignedProduct {
+    pub id: i32,
+    pub site_id: String,
+    pub item_id: Option<String>,
+    pub taskorder_id: Option<i32>,
+    pub producer: Option<String>,
+    pub taskorder_name: Option<String>,
+    pub product_type_id: i32,
+    pub product_type_name: Option<String>,
+    pub team_id: Option<i32>,
+    pub team_name: Option<String>,
+    pub status: String,
+    pub status_date: Option<NaiveDate>,
+    pub acceptance_date: Option<NaiveDate>,
+    pub publish_date: Option<NaiveDate>,
+    pub file_path: Option<String>,
+    pub s2_index: Option<String>,
+    pub geom: Option<String>,
+    pub classification: Option<String>,
+    pub assigned_at: Option<NaiveDateTime>,
+    pub due_date: Option<NaiveDateTime>,
 }

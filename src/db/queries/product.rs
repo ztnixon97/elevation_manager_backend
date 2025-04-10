@@ -1,5 +1,5 @@
 use axum::{
-    extract::{State, Path, Query},
+    extract::{Extension,State, Path, Query},
     Json,
     http::StatusCode,
 };
@@ -7,10 +7,10 @@ use serde::Deserialize;
 use sqlx::{PgPool, QueryBuilder, Row};
 use serde_json::{json, Value};
 use s2::{cellid::CellID, cell::Cell, latlng::LatLng};
-use crate::db::models::{
-    product::{ProductIdResponse, BulkUpdateByFilterParams, BulkUpdateProducts, NewProduct, NewProductType, Product, ProductFilterParams, ProductResponse, ProductType, UpdateProduct},
+use crate::{api::auth::Claims, db::models::{
+    product::{AssignedProduct, BulkUpdateByFilterParams, BulkUpdateProducts, NewProduct, NewProductType, Product, ProductFilterParams, ProductIdResponse, ProductResponse, ProductType, UpdateProduct},
     review::Review 
-};
+}};
 use crate::utils::api_response::ApiResponse;
 
 // Utility Functions
@@ -284,9 +284,7 @@ pub async fn get_products(
     );
 
     let mut count_query_builder = QueryBuilder::new("SELECT COUNT(id) FROM products");
-
     let mut has_conditions = false; // Track if WHERE conditions exist
-
     macro_rules! push_if_some {
         ($field:ident) => {
             if let Some(value) = &params.$field {
@@ -303,7 +301,6 @@ pub async fn get_products(
             }
         };
     }
-
     push_if_some!(taskorder_id);
     push_if_some!(item_id);
     push_if_some!(site_id);
@@ -312,8 +309,6 @@ pub async fn get_products(
     push_if_some!(file_path);
     push_if_some!(s2_index);
     push_if_some!(classification);
-
-    // Handle date range filters
     macro_rules! push_date_range {
         ($field:ident, $min:ident, $max:ident) => {
             if let Some(min_date) = &params.$min {
@@ -342,14 +337,11 @@ pub async fn get_products(
             }
         };
     }
-
     push_date_range!(status_date, status_date_min, status_date_max);
     push_date_range!(acceptance_date, acceptance_date_min, acceptance_date_max);
     push_date_range!(publish_date, publish_date_min, publish_date_max);
-
     // Ensure ORDER BY is always included in the product query
     query_builder.push(" ORDER BY item_id");
-
     // Apply pagination if requested
     if params.page.is_some() || params.limit.is_some() || params.offset.is_some() {
         let page = params.page.unwrap_or(1).max(1);
@@ -895,6 +887,80 @@ pub async fn get_product_types(
      ))
 }
 
+
+#[utoipa::path(
+    get,
+    path = "/products/me",
+    tag = "Products",
+    responses(
+        (status = 200, description = "Products retrieved successfully", body = [AssignedProduct]),
+        (status = 500, description = "Internal server error")
+    ),
+    security(
+        ("bearerAuth" = [])
+    )
+)]
+pub async fn get_assigned_products(
+    State(db_pool): State<PgPool>,
+    Extension(claims): Extension<Claims>,
+) -> Result<ApiResponse<Value>, ApiResponse<()>> {
+    // Parse user ID from JWT claims
+    let user_id = claims.sub.parse::<i32>().map_err(|e| {
+        ApiResponse::error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Invalid user_id in claims",
+            Some(json!({ "message": e.to_string() }))
+        )
+    })?;
+
+    // Query products assigned to this user
+    let products = sqlx::query_as!(
+        AssignedProduct,
+        r#"
+        SELECT 
+          p.id,
+          p.site_id,
+          p.item_id,
+          p.taskorder_id,
+          td.producer,
+          td.name AS taskorder_name,
+          p.product_type_id,
+          pt.name AS product_type_name,
+          pa.team_id,
+          t.name AS team_name,
+          p.status,
+          p.status_date,
+          p.acceptance_date,
+          p.publish_date,
+          p.file_path,
+          p.s2_index,
+          ST_AsEWKT(p.geom) AS geom,
+          p.classification,
+          pa.assigned_at,
+          pa.due_date
+        FROM products p
+        LEFT JOIN product_assignments pa ON p.id = pa.product_id
+        LEFT JOIN teams t ON pa.team_id = t.id
+        LEFT JOIN product_types pt ON p.product_type_id = pt.id
+        LEFT JOIN taskorders td ON p.taskorder_id = td.id
+        WHERE pa.user_id = $1
+        "#,
+        user_id
+    )
+    .fetch_all(&db_pool)
+    .await
+    .map_err(|e| ApiResponse::<()>::error(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Failed to fetch assigned products",
+        Some(json!({ "error": e.to_string() }))
+    ))?;
+
+    Ok(ApiResponse::success(
+        StatusCode::OK,
+        "Products retrieved successfully",
+        json!({ "products": products })
+    ))
+}
 use utoipa::OpenApi;
 
 #[derive(OpenApi)]
@@ -907,9 +973,10 @@ use utoipa::OpenApi;
         delete_product,
         bulk_update_products_by_filter,
         get_product_id,
+        get_assigned_products,
     ),
     components(
-        schemas(ProductIdResponse, ProductResponse, UpdateProduct, NewProduct, ProductFilterParams, BulkUpdateProducts)
+        schemas(AssignedProduct, ProductIdResponse, ProductResponse, UpdateProduct, NewProduct, ProductFilterParams, BulkUpdateProducts)
     ),
     tags(
         (name = "Products", description = "Product Management Endpoints")

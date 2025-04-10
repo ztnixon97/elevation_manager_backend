@@ -1,6 +1,7 @@
 use crate::db::queries::product::{
     bulk_update_products, bulk_update_products_by_filter, create_product, create_product_type,
-    delete_product, get_product, get_product_id, get_product_types, get_products, update_product,
+    delete_product, get_assigned_products, get_product, get_product_id, get_product_types,
+    get_products, update_product,
 };
 
 use crate::db::models::*;
@@ -15,6 +16,7 @@ pub fn product_routes() -> Router<PgPool> {
     Router::new()
         .route("/products", post(create_product)) // Create a product
         .route("/products", get(get_products)) // Get all products (with pagination & filters)
+        .route("/products/me", get(get_assigned_products))
         .route("/products/{product_id}", get(get_product)) // Get a single product by ID
         .route("/products/{product_id}", patch(update_product)) // Update a product by ID
         .route("/products/{product_id}", delete(delete_product)) // Delete a product by ID

@@ -7,7 +7,7 @@ use axum::{
 use sqlx::{PgPool, QueryBuilder, Row}; // Add Row trait import
 use serde_json::json;
 use chrono::Utc;
-use crate::api::auth::Claims;
+use crate::{api::auth::Claims, middleware::auth::UserPermissions};
 use crate::db::models::notification::{
     Notification, NotificationTarget, NotificationDismissal, 
     NewNotification, UpdateNotification, NotificationFilter,
@@ -988,8 +988,131 @@ pub async fn get_notification_count(
     ))
 }
 
-use utoipa::OpenApi;
 
+
+/// Get all notifications for a specific team
+#[axum::debug_handler]
+pub async fn get_team_notifications(
+    Path(team_id): Path<i32>,
+    State(pool): State<PgPool>,
+    Extension(user_permissions): Extension<UserPermissions>,
+    Extension(claims): Extension<Claims>,
+) -> Result<ApiResponse<Vec<NotificationWithTargets>>, ApiResponse<()>> {
+    // First check if the user is a member of the team
+    if !user_permissions.is_on_team(team_id) {
+        return Err(ApiResponse::<()>::error(
+            StatusCode::FORBIDDEN,
+            "You are not a member of this team",
+            None,
+        ));
+    }
+
+    // Get team-specific notifications and global notifications
+    let notifications = sqlx::query!(
+        r#"
+        SELECT 
+            n.id, 
+            n.title, 
+            n.body, 
+            n.type as "type_field!", 
+            n.action_type, 
+            n.action_data, 
+            n.global as "global!", 
+            n.dismissible as "dismissible!", 
+            n.created_at,
+            n.expires_at,
+            CASE WHEN nd.user_id IS NOT NULL THEN true ELSE false END as "dismissed!"
+        FROM notifications n
+        LEFT JOIN notification_dismissals nd ON 
+            n.id = nd.notification_id AND 
+            nd.user_id = $1
+        WHERE 
+            (n.global = true)
+            OR
+            EXISTS (
+                SELECT 1 FROM notification_targets nt 
+                WHERE nt.notification_id = n.id 
+                AND nt.scope = 'team' 
+                AND nt.target_id = $2
+            )
+        ORDER BY n.created_at DESC
+        "#,
+        claims.user_id()?,
+        team_id
+    )
+    .fetch_all(&pool)
+    .await
+    .map_err(|e| {
+        ApiResponse::<()>::error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to retrieve notifications",
+            Some(json!({ "error": e.to_string() })),
+        )
+    })?;
+
+    // Convert the raw DB results to our API model
+    let mut notifications_with_targets = Vec::new();
+    for db_notif in notifications {
+        // Get targets for this notification - using the scope::text cast
+        let targets_rows = sqlx::query!(
+            r#"
+            SELECT id, notification_id, scope::text as "scope!", target_id 
+            FROM notification_targets 
+            WHERE notification_id = $1
+            "#,
+            db_notif.id
+        )
+        .fetch_all(&pool)
+        .await
+        .map_err(|e| {
+            ApiResponse::<()>::error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to retrieve notification targets",
+                Some(json!({ "error": e.to_string() })),
+            )
+        })?;
+        
+        // Convert rows to NotificationTarget objects
+        let targets: Vec<NotificationTarget> = targets_rows
+            .into_iter()
+            .map(|row| NotificationTarget {
+                id: row.id,
+                notification_id: row.notification_id,
+                scope: row.scope,
+                target_id: row.target_id,
+            })
+            .collect();
+
+        // Build the notification object
+        let notification = Notification {
+            id: db_notif.id,
+            title: db_notif.title,
+            body: db_notif.body,
+            type_field: db_notif.type_field,
+            action_type: db_notif.action_type,
+            action_data: db_notif.action_data,
+            global: db_notif.global,
+            dismissible: db_notif.dismissible,
+            created_at: db_notif.created_at,
+            expires_at: db_notif.expires_at,
+        };
+
+        // Add to result list
+        notifications_with_targets.push(NotificationWithTargets {
+            notification,
+            targets,
+            dismissed: db_notif.dismissed,
+        });
+    }
+
+    Ok(ApiResponse::success(
+        StatusCode::OK,
+        "Team notifications retrieved successfully",
+        notifications_with_targets,
+    ))
+}
+/// Get all notifications for a specific team
+use utoipa::OpenApi;
 #[derive(OpenApi)]
 #[openapi(
     paths(

@@ -27,4 +27,8 @@ pub fn notification_routes() -> Router<PgPool> {
             "/notifications/{notification_id}/dismiss",
             post(dismiss_notification),
         )
+        .route(
+            "/teams/{team_id}/notifications",
+            get(get_team_notifications),
+        )
 }

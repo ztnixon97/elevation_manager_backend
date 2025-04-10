@@ -4,6 +4,7 @@ use serde_json::{json, Value};
 use crate::{db::models::product::{PaginationParams, ProductResponse, TeamProductResponse}, middleware::auth::UserPermissions, utils::api_response::ApiResponse};
 use crate::db::models::team::*;
 use serde::Deserialize;
+use chrono::NaiveDate;
 
 use utoipa::ToSchema;
 /// Create a new team
@@ -492,20 +493,23 @@ pub async fn update_user_role(
         ("bearerAuth" = [])
     )
 )]
+
+
+
 pub async fn get_team_products(
     State(db_pool): State<PgPool>,
     Extension(user_permissions): Extension<UserPermissions>,
     Path(team_id): Path<i32>,
 ) -> Result<ApiResponse<Value>, ApiResponse<()>> {
     
-    // Ensure the user has permission to view products for this team
+    // Permission check
     if !user_permissions.is_admin() && !user_permissions.is_manager() && !user_permissions.is_on_team(team_id) {
         return Err(ApiResponse::error(StatusCode::FORBIDDEN, "You do not have permission to view products for this team", None));
     }
-
-    // ✅ First, check if the team exists
+    
+    // Team existence check
     let team_exists = sqlx::query_scalar!(
-        "SELECT EXISTS (SELECT 1 FROM teams WHERE id = $1)",
+        "SELECT EXISTS(SELECT 1 FROM teams WHERE id = $1)",
         team_id
     )
     .fetch_one(&db_pool)
@@ -517,42 +521,209 @@ pub async fn get_team_products(
             Some(json!({ "error": e.to_string() })),
         )
     })?;
-
+    
     if !team_exists.unwrap_or(false) {
         return Err(ApiResponse::error(StatusCode::NOT_FOUND, "Team not found", None));
     }
-
-    // ✅ Fetch assigned products
-    let result = sqlx::query_as!(
-        TeamProductResponse,
+    
+    // Extremely simplified query - get products first, then determine assignments separately
+    let product_rows = sqlx::query!(
         r#"
-        SELECT p.id, p.item_id, p.site_id, p.status, p.status_date, 
+        SELECT DISTINCT p.id, p.item_id, p.site_id, p.status, p.status_date, 
                p.acceptance_date, p.publish_date, p.product_type_id, p.s2_index
         FROM products p
-        JOIN product_teams pt ON p.id = pt.product_id
-        WHERE pt.team_id = $1
-        ORDER BY p.status_date DESC
+        WHERE 
+            -- Direct assignment
+            EXISTS (
+                SELECT 1 FROM explicit_team_product etp
+                JOIN team_members tm ON etp.user_id = tm.user_id
+                WHERE tm.team_id = $1 AND etp.product_id = p.id
+            ) OR
+            -- Product type assignment
+            EXISTS (
+                SELECT 1 FROM product_type_teams ptt
+                WHERE ptt.team_id = $1 AND ptt.product_type_id = p.product_type_id
+            ) OR
+            -- Task order assignment
+            EXISTS (
+                SELECT 1 FROM task_order_teams tot
+                JOIN taskorders t ON tot.task_order_id = t.id
+                WHERE tot.team_id = $1 AND p.taskorder_id = t.id
+            )
+        ORDER BY p.status_date DESC NULLS LAST
+        LIMIT 1000;
         "#,
         team_id
     )
     .fetch_all(&db_pool)
-    .await;
-
-    match result {
-        Ok(products) => Ok(ApiResponse::success(
-            StatusCode::OK,
-            "Products retrieved successfully",
-            json!({ "products": products }), // ✅ Always return an array (even if empty)
-        )),
-        Err(e) => Err(ApiResponse::error(
+    .await
+    .map_err(|e| {
+        ApiResponse::error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Failed to retrieve team products",
             Some(json!({ "error": e.to_string() })),
-        )),
+        )
+    })?;
+    
+    // If we have products, determine their assignment methods and current assignee
+    if !product_rows.is_empty() {
+        let product_ids: Vec<i32> = product_rows.iter().map(|row| row.id).collect();
+        
+        // Get direct assignments
+        let direct_assignments = sqlx::query!(
+            r#"
+            SELECT DISTINCT p.id
+            FROM products p
+            JOIN explicit_team_product etp ON p.id = etp.product_id
+            JOIN team_members tm ON etp.user_id = tm.user_id
+            WHERE tm.team_id = $1 AND p.id = ANY($2)
+            "#,
+            team_id,
+            &product_ids
+        )
+        .fetch_all(&db_pool)
+        .await
+        .map_err(|e| {
+            ApiResponse::error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to retrieve direct assignments",
+                Some(json!({ "error": e.to_string() })),
+            )
+        })?;
+        
+        let direct_ids: std::collections::HashSet<i32> = direct_assignments
+            .iter()
+            .map(|row| row.id)
+            .collect();
+        
+        // Get type assignments
+        let type_assignments = sqlx::query!(
+            r#"
+            SELECT DISTINCT p.id
+            FROM products p
+            JOIN product_type_teams ptt ON p.product_type_id = ptt.product_type_id
+            WHERE ptt.team_id = $1 AND p.id = ANY($2)
+            "#,
+            team_id,
+            &product_ids
+        )
+        .fetch_all(&db_pool)
+        .await
+        .map_err(|e| {
+            ApiResponse::error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to retrieve type assignments",
+                Some(json!({ "error": e.to_string() })),
+            )
+        })?;
+        
+        let type_ids: std::collections::HashSet<i32> = type_assignments
+            .iter()
+            .map(|row| row.id)
+            .collect();
+        
+        // Get task order assignments
+        let task_assignments = sqlx::query!(
+            r#"
+            SELECT DISTINCT p.id
+            FROM products p
+            JOIN taskorders t ON p.taskorder_id = t.id
+            JOIN task_order_teams tot ON t.id = tot.task_order_id
+            WHERE tot.team_id = $1 AND p.id = ANY($2)
+            "#,
+            team_id,
+            &product_ids
+        )
+        .fetch_all(&db_pool)
+        .await
+        .map_err(|e| {
+            ApiResponse::error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to retrieve task order assignments",
+                Some(json!({ "error": e.to_string() })),
+            )
+        })?;
+        
+        let task_ids: std::collections::HashSet<i32> = task_assignments
+            .iter()
+            .map(|row| row.id)
+            .collect();
+        
+        // Get current assignees
+        let assignees = sqlx::query!(
+            r#"
+            SELECT pa.product_id, u.username
+            FROM product_assignments pa
+            JOIN users u ON pa.user_id = u.id
+            WHERE pa.team_id = $1 AND pa.status = 'active' AND pa.product_id = ANY($2)
+            "#,
+            team_id,
+            &product_ids
+        )
+        .fetch_all(&db_pool)
+        .await
+        .map_err(|e| {
+            ApiResponse::error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to retrieve assignee information",
+                Some(json!({ "error": e.to_string() })),
+            )
+        })?;
+        
+        let assignee_map: std::collections::HashMap<i32, String> = assignees
+            .iter()
+            .map(|row| (row.product_id, row.username.clone()))
+            .collect();
+        
+        // Construct the final response
+        let products: Vec<TeamProductResponse> = product_rows
+            .into_iter()
+            .map(|row| {
+                // Build assignment types
+                let mut types = Vec::new();
+                if direct_ids.contains(&row.id) {
+                    types.push("direct".to_string());
+                }
+                if type_ids.contains(&row.id) {
+                    types.push("product_type".to_string());
+                }
+                if task_ids.contains(&row.id) {
+                    types.push("task_order".to_string());
+                }
+                
+                // Get assigned user if any
+                let assigned_to = assignee_map.get(&row.id).cloned();
+                
+                TeamProductResponse {
+                    id: row.id,
+                    item_id: row.item_id,
+                    site_id: row.site_id,
+                    status: row.status,
+                    status_date: Some(row.status_date),
+                    acceptance_date: row.acceptance_date,
+                    publish_date: row.publish_date,
+                    product_type_id: row.product_type_id,
+                    s2_index: row.s2_index,
+                    assignment_types: types,
+                    assigned_to,
+                }
+            })
+            .collect();
+        
+        Ok(ApiResponse::success(
+            StatusCode::OK,
+            "Products retrieved successfully",
+            json!({ "products": products }),
+        ))
+    } else {
+        // No products found
+        Ok(ApiResponse::success(
+            StatusCode::OK,
+            "No products found for team",
+            json!({ "products": [] }),
+        ))
     }
 }
-
-
 #[derive(Deserialize, ToSchema)]
 pub struct AssignProduct {
     pub product_id: i32,

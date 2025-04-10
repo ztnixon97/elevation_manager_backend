@@ -18,6 +18,7 @@ use crate::db::models::requests::{
 use crate::api::auth::Claims;
 use crate::middleware::auth::UserPermissions;
 
+use crate::utils::notification;
 use super::{team::add_user_to_team, user};
 
 
@@ -132,7 +133,6 @@ pub async fn create_approval_request(
                 ))?;
 
                 // Create notification
-                use crate::utils::notification;
                 notification::notify_team_access_request(
                     &pool, // Use the pool directly, not the transaction
                     user_id,
@@ -246,6 +246,109 @@ pub async fn get_pending_requests(
 }
 
 
+#[utoipa::path(
+    get,
+    path = "/teams/{team_id}/requests",
+    params(
+        ("team_id" = i32, Path, description = "Team ID")
+    ),
+    responses(
+        (status = 200, description = "List of pending approval requests for team", body = Vec<ApprovalRequest>),
+        (status = 403, description = "User is not authorized to view team requests"),
+        (status = 500, description = "Failed to retrieve requests")
+    ),
+    tag = "Requests",
+    security(("bearerAuth" = []))
+)]
+pub async fn get_team_pending_requests(
+    State(pool): State<PgPool>,
+    Extension(claims): Extension<Claims>,
+    Extension(user_permissions): Extension<UserPermissions>,
+    Path(team_id): Path<i32>,
+) -> Result<ApiResponse<Vec<ApprovalRequest>>, ApiResponse<()>> {
+    // Check if user has permission to view team requests
+    if !user_permissions.is_team_lead(team_id) && !user_permissions.is_admin() && !user_permissions.is_manager() {
+        return Err(ApiResponse::<()>::error(
+            StatusCode::FORBIDDEN,
+            "You don't have permission to view team requests",
+            None,
+        ));
+    }
+
+    // Get all pending TeamJoin requests for this team
+    let mut requests = sqlx::query_as!(
+        ApprovalRequest,
+        r#"
+        SELECT id, 
+               request_type as "request_type!: ApprovalRequestType", 
+               requested_by, 
+               target_id, 
+               details, 
+               status as "status!: ApprovalStatus", 
+               reviewed_by, 
+               requested_at, 
+               reviewed_at
+        FROM approval_requests
+        WHERE status = 'pending' 
+          AND request_type = 'team_join'
+          AND target_id = $1
+        ORDER BY requested_at DESC
+        "#,
+        team_id
+    )
+    .fetch_all(&pool)
+    .await
+    .map_err(|e| ApiResponse::<()>::error(
+        StatusCode::INTERNAL_SERVER_ERROR, 
+        "Failed to retrieve team requests", 
+        Some(json!({"error": e.to_string()}))
+    ))?;
+
+    // Enrich requests with usernames for better frontend display
+    // Create a list of user IDs we need to fetch
+    let user_ids: Vec<i32> = requests
+        .iter()
+        .map(|req| req.requested_by)
+        .collect();
+
+    if !user_ids.is_empty() {
+        let usernames = sqlx::query!(
+            r#"
+            SELECT id, username 
+            FROM users 
+            WHERE id = ANY($1)
+            "#,
+            &user_ids
+        )
+        .fetch_all(&pool)
+        .await
+        .map_err(|e| ApiResponse::<()>::error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to fetch user details",
+            Some(json!({"error": e.to_string()}))
+        ))?;
+
+        // Create a username lookup map
+        let username_map: std::collections::HashMap<i32, String> = usernames
+            .into_iter()
+            .map(|row| (row.id, row.username))
+            .collect();
+
+        // Add username to each request's details as an extension field
+        for request in &mut requests {
+            if let Some(username) = username_map.get(&request.requested_by) {
+                // Add username to the details JSON
+                let mut details = request.details.clone();
+                if let Some(obj) = details.as_object_mut() {
+                    obj.insert("username".to_string(), json!(username));
+                    request.details = details;
+                }
+            }
+        }
+    }
+
+    Ok(ApiResponse::success(StatusCode::OK, "Team pending requests", requests))
+}
 #[utoipa::path(
     patch,
     path = "/requests/{request_id}",
@@ -377,6 +480,7 @@ async fn handle_team_join_approval(
             "Failed to add user to team",
             Some(json!({"error": e.to_string()})),
         ))?;
+
     }
 
     Ok(())
@@ -426,7 +530,6 @@ async fn handle_team_access_request(
     ))?;
 
     // Create notification for team leads
-    use crate::utils::notification;
     notification::notify_team_access_request(
         pool,
         user_id,
