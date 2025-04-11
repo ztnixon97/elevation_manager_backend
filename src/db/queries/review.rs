@@ -23,13 +23,30 @@ use crate::api::auth::Claims;
 //
 
 fn get_review_dir(product_id: i32, reviewer_id: i32, username: &str) -> PathBuf {
-    Config::get()
+    let path = Config::get()
         .review_storage_path
-        .join(format!("{}/{}_{}", product_id, reviewer_id, username))
+        .join(format!("{}/{}_{}", product_id, reviewer_id, username));
+    
+    // Ensure directory exists
+    std::fs::create_dir_all(&path).unwrap_or_else(|e| {
+        error!("Failed to create review directory: {}", e);
+    });
+    
+    path
 }
 
 fn get_review_file_path(product_id: i32, reviewer_id: i32, username: &str, review_id: i32) -> PathBuf {
-    get_review_dir(product_id, reviewer_id, username).join(format!("review_{}.html", review_id))
+    let dir = get_review_dir(product_id, reviewer_id, username);
+    let path = dir.join(format!("review_{}.html", review_id));
+    
+    // Ensure parent directory exists
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).unwrap_or_else(|e| {
+            error!("Failed to create parent directory: {}", e);
+        });
+    }
+    
+    path
 }
 
 fn get_image_dir(product_id: i32, reviewer_id: i32, username: &str, review_id: i32) -> PathBuf {
