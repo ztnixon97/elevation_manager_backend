@@ -9,7 +9,7 @@ edition = "2021"
 axum = { version = "0.8.1", features = ["macros", "multipart"] }
 
 # 🔥 Async Runtime
-tokio = { version = "1.44.0", features = ["full"] }
+tokio = { version = "1.44.2", features = ["full"] }
 
 # 🛢️ Database (PostgreSQL + PostGIS Support)
 sqlx = { version = "0.8.3", features = ["postgres", "uuid", "chrono", "macros", "runtime-tokio", "bigdecimal", "derive"] }
