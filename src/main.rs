@@ -27,6 +27,7 @@ use std::sync::{Arc, atomic::{AtomicBool, AtomicU64, Ordering}};
 use std::time::{Duration, Instant};
 use moka::sync::Cache;
 use tracing_subscriber;
+use tracing_appender;
 use crate::db::queries::requests::RequestDoc;
 
 #[cfg(feature = "tui-support")]
@@ -140,14 +141,14 @@ async fn main() {
 
     std::fs::create_dir_all("logs").expect("Failed to create logs directory");
 
-    //let file_appender = tracing_appender::rolling::daily("logs", "app.log");
-    //let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+    let file_appender = tracing_appender::rolling::daily("logs", "app.log");
+    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
 
-    //tracing_subscriber::fmt()
-    //    .with_max_level(tracing::Level::INFO) // Adjust log level as needed (e.g., DEBUG, TRACE)
-    //    .with_target(true) // Include target (module path) in logs
-    //    .with_writer(non_blocking) // Write logs to the file
-    //   .init();
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO) // Adjust log level as needed (e.g., DEBUG, TRACE)
+        .with_target(true) // Include target (module path) in logs
+        .with_writer(non_blocking) // Write logs to the file
+       .init();
 
     let permission_cache = create_permission_cache();
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");

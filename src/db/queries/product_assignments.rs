@@ -38,25 +38,21 @@ pub async fn create_user_assignment(
     let assigned_by = new_assignment
         .assigned_by
         .unwrap_or_else(|| claims.user_id().unwrap_or(0));
+
+    let user_id = new_assignment.user_id.unwrap_or(claims.user_id()?);
+
     let now = chrono::Utc::now().naive_utc();
 
     // Permissions check
-    if !user_permissions.can_edit_product(new_assignment.product_id) {
+    if !user_permissions.can_assign_product(new_assignment.product_id, new_assignment.team_id, user_id) {
         return Err(ApiResponse::<()>::error(
             StatusCode::FORBIDDEN,
-            "You do not have permission to edit this product",
+            "You do not have permission to assign this product",
             None,
         ));
     }
 
     let team_name = if let Some(team_id) = new_assignment.team_id {
-        if !user_permissions.is_team_lead(team_id) {
-            return Err(ApiResponse::<()>::error(
-                StatusCode::FORBIDDEN,
-                "You do not have permission to assign this product to this team",
-                None,
-            ));
-        }
 
         // Safe to unwrap here because we already checked team_id is Some
         get_team_name(&pool, team_id)
@@ -65,6 +61,8 @@ pub async fn create_user_assignment(
     } else {
         "Unassigned".to_string()
     };
+
+   
 
     // Insert the assignment into the database
     let result = sqlx::query_as!(
@@ -96,7 +94,7 @@ pub async fn create_user_assignment(
             completed_at
         "#,
         new_assignment.product_id,
-        new_assignment.user_id,
+        user_id,
         new_assignment.team_id,
         new_assignment.assignment_type,
         status,
@@ -120,7 +118,7 @@ pub async fn create_user_assignment(
 
     let _ = create_assignment_notification(
         &pool,
-        new_assignment.user_id,
+        user_id,
         &product_name,
         &team_name,
         &claims.username,

@@ -27,7 +27,7 @@ pub struct NewReview {
 }
 
 /// ✅ **Update Review Request**
-#[derive(Deserialize, ToSchema)]
+#[derive(Deserialize, Debug, ToSchema)]
 pub struct UpdateReview {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub review_status: Option<String>,

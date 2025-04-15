@@ -134,6 +134,56 @@ impl UserPermissions {
             || self.is_admin()
     }
 
+    pub fn can_assign_product(&self, product_id: i32, team_id: Option<i32>, assignee_id: i32) -> bool {
+        // Self Assignment
+        let is_self_assignment = self.user_id == assignee_id;
+        
+        // Admin always has permission
+        if self.is_admin() {
+            return true;
+        }
+        
+        // Handle team-based assignments
+        if let Some(team_id) = team_id {
+            // Team leads can assign to team members
+            if self.is_team_lead(team_id) {
+                return true;
+            }
+            
+            // For regular users, check if this is self-assignment and they are on the team
+            if is_self_assignment && self.is_on_team(team_id) {
+                // Check team-based permissions
+                if let Some(role) = self.get_team_role(team_id) {
+                    return role == "editor" || role == "member" || role == "team_lead";
+                }
+            }
+        }
+        
+        // Handle explicit permissions (outside of team structure)
+        if is_self_assignment {
+            // Check explicit product permissions
+            if let Some(role) = self.has_explicit_product_permission(product_id) {
+                return role == "editor" || role == "member" || role == "team_lead";
+            }
+            
+            // Check task order or product type permissions
+            return self.task_order_permissions.values().any(|role| 
+                    role == "editor" || role == "member" || role == "team_lead")
+                || self.product_type_permissions.values().any(|role| 
+                    role == "editor" || role == "member" || role == "team_lead");
+        }
+        
+        // If none of the conditions apply, disallow the assignment
+        false
+    }
+
+    // Helper function to check if a user is on a team (for checking assignee)
+    fn is_user_on_team(user_id: i32, team_id: i32) -> bool {
+        // This would be implemented as a database query
+        // For now, we'll assume this is handled externally
+        true
+}
+
     /// ✅ **Check if user can view a product**
     pub fn can_view_product(&self, product_id: i32) -> bool {
         self.is_admin()

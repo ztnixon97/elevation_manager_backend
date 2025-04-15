@@ -201,6 +201,120 @@ pub mod notification_types {
     pub const SYSTEM_ANNOUNCEMENT: &str = "system_announcement";
     pub const PRODUCT_ASSIGNMENT: &str = "product_assignment";
 }
+pub async fn notify_review_pending_to_team_leads(
+    pool: &PgPool,
+    review_id: i32,
+    reviewer_id: i32,
+    product_id: i32,
+) -> NotificationResult<()> {
+    // Add debug logging
+    tracing::info!(
+        "Starting notify_review_pending_to_team_leads for review_id={}, reviewer_id={}, product_id={}",
+        review_id, reviewer_id, product_id
+    );
+
+    // First, get the product and reviewer information
+    let rec = match sqlx::query!(
+        r#"
+        SELECT p.site_id, u.username
+        FROM products p
+        JOIN users u ON u.id = $1
+        WHERE p.id = $2
+        "#,
+        reviewer_id,
+        product_id
+    )
+    .fetch_one(pool)
+    .await {
+        Ok(record) => record,
+        Err(err) => {
+            tracing::error!("Failed to fetch product/user info: {}", err);
+            return Err(NotificationError::Database(err));
+        }
+    };
+
+    let site_id = rec.site_id;
+    let username = rec.username;
+    tracing::debug!("Got product site_id={}, username={}", site_id, username);
+
+    // Get all teams associated with this product
+    let teams = match sqlx::query!(
+        "SELECT DISTINCT team_id FROM product_assignments WHERE product_id = $1",
+        product_id
+    )
+    .fetch_all(pool)
+    .await {
+        Ok(teams) => teams,
+        Err(err) => {
+            tracing::error!("Failed to fetch product teams: {}", err);
+            return Err(NotificationError::Database(err));
+        }
+    };
+
+    tracing::debug!("Found {} teams for this product", teams.len());
+
+    // Collect all team lead user IDs
+    let mut lead_user_ids = vec![];
+    for team in teams {
+        if let Some(team_id) = team.team_id {
+            match sqlx::query!(
+                "SELECT user_id FROM team_members WHERE team_id = $1 AND role = 'team_lead'",
+                team_id
+            )
+            .fetch_all(pool)
+            .await {
+                Ok(leads) => {
+                    let team_leads: Vec<i32> = leads.into_iter().map(|r| r.user_id).collect();
+                    tracing::debug!("Found {} leads for team_id={}", team_leads.len(), team_id);
+                    lead_user_ids.extend(team_leads);
+                }
+                Err(err) => {
+                    tracing::error!("Failed to fetch team leads for team_id={}: {}", team_id, err);
+                    // Continue with other teams instead of failing completely
+                    continue;
+                }
+            }
+        }
+    }
+
+    // De-duplicate lead IDs (in case a user is a lead in multiple teams)
+    lead_user_ids.sort();
+    lead_user_ids.dedup();
+    
+    tracing::info!("Found {} unique team leads to notify", lead_user_ids.len());
+
+    if lead_user_ids.is_empty() {
+        tracing::warn!("No team leads found for notification, nothing to do");
+        return Ok(()); // No-op if no leads found
+    }
+
+    // Build and send the notification
+    let notification_result = NotificationBuilder::new(
+        format!("Review Pending: {}", site_id),
+        notification_types::REVIEW_REQUEST,
+    )
+    .body(format!("A review (#{}) for site '{}' submitted by {} is pending approval.", 
+                 review_id, site_id, username))
+    .target_users(lead_user_ids)
+    .action("review", json!({ 
+        "review_id": review_id,
+        "product_id": product_id,
+        "reviewer_id": reviewer_id
+    }))
+    .send(pool)
+    .await;
+
+    match notification_result {
+        Ok(notification_id) => {
+            tracing::info!("Successfully sent review pending notification (id={})", notification_id);
+            Ok(())
+        }
+        Err(err) => {
+            tracing::error!("Failed to send review pending notification: {:?}", err);
+            Err(err)
+        }
+    }
+}
 
 /// Helper functions for common notification scenarios
 pub async fn notify_team_access_request(

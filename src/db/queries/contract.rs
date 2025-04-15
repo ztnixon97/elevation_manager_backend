@@ -7,7 +7,7 @@ use sqlx::{PgPool, QueryBuilder};
 use serde_json::json;
 use utoipa::ToSchema;
 
-use crate::db::models::contract::{Contract, NewContract, UpdateContract};
+use crate::db::models::{contract::{Contract, NewContract, UpdateContract}, taskorder::TaskOrder};
 use crate::utils::api_response::ApiResponse;
 
 /// Creates a new contract
@@ -213,6 +213,38 @@ pub async fn delete_contract(
 
     Ok(ApiResponse::success(StatusCode::OK, "Contract deleted successfully", ()))
 }
+
+#[utoipa::path(
+    get,
+    path = "contracts/{contract_id/taskorders}",
+    responses(
+        (status = 200, description = "Successfully retrived contract taskorderes", body = Vec<TaskOrder>),
+        (status = 500, description = "Failed to retrived taskorders")
+    ),
+    tag = "Contracts",
+    security(
+        ("bearerAuth"= [])
+    )
+)]
+pub async fn get_contract_taskorders(
+    State(pool): State<PgPool>,
+    Path(id): Path<i32>
+) -> Result<ApiResponse<Vec<TaskOrder>>, ApiResponse<()>> {
+    let result = sqlx::query_as!(
+        TaskOrder,
+        "SELECT * from taskorders where contract_id = $1",
+        id
+    )
+    .fetch_all(&pool)
+    .await
+    .map_err(|e| ApiResponse::<()>::error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to retrived contract task orders",
+            Some(json!({ "error": e.to_string() }))
+        ))?;
+
+    Ok(ApiResponse::<Vec<TaskOrder>>::success(StatusCode::OK, "Contract Task Orders retrived successfully", result ))
+}
 use utoipa::OpenApi;
 
 #[derive(OpenApi)]
@@ -222,7 +254,8 @@ use utoipa::OpenApi;
         get_all_contracts,
         get_contract,
         update_contract,
-        delete_contract
+        delete_contract,
+        get_contract_taskorders
     ),
     components(
         schemas(Contract, NewContract, UpdateContract)

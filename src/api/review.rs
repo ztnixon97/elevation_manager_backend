@@ -1,7 +1,7 @@
 use crate::db::queries::review::{
     create_review, delete_review, delete_review_image, get_all_review_images, get_review,
     get_review_image, get_reviews_for_product, get_reviews_for_user, update_review,
-    upload_review_image,
+    upload_review_image, get_pending_reviews_for_team_lead,
 };
 use axum::{
     routing::{delete, get, patch, post},
@@ -30,5 +30,9 @@ pub fn review_routes() -> Router<PgPool> {
         .route(
             "/reviews/{review_id}/image/{filename}",
             delete(delete_review_image),
+        )
+        .route(
+            "/reviews/team_lead/pending",
+            get(get_pending_reviews_for_team_lead),
         )
 }

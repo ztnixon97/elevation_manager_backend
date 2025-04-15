@@ -8,11 +8,12 @@ use tokio::io::AsyncWriteExt;
 use tokio_util::io::ReaderStream;
 use sqlx::PgPool;
 use serde_json::json;
-use crate::db::models::review::{NewReview, Review, ReviewResponse, UpdateReview, ReviewImageUploadSchema};
+use crate::{db::models::review::{NewReview, Review, ReviewImageUploadSchema, ReviewResponse, UpdateReview}, utils::notification::notify_review_pending_to_team_leads};
 use crate::utils::api_response::ApiResponse;
 use crate::config::Config;
 use crate::api::auth::Claims;
-
+use tracing::{error, info, debug};
+use crate::utils::notification::{NotificationBuilder, notification_types};
 //
 // Utility functions for human-readable folder structure:
 // Reviews are stored under:
@@ -25,7 +26,7 @@ use crate::api::auth::Claims;
 fn get_review_dir(product_id: i32, reviewer_id: i32, username: &str) -> PathBuf {
     let path = Config::get()
         .review_storage_path
-        .join(format!("{}/{}_{}", product_id, reviewer_id, username));
+        .join(format!("reviews/{}/{}_{}", product_id, reviewer_id, username));
     
     // Ensure directory exists
     std::fs::create_dir_all(&path).unwrap_or_else(|e| {
@@ -52,7 +53,7 @@ fn get_review_file_path(product_id: i32, reviewer_id: i32, username: &str, revie
 fn get_image_dir(product_id: i32, reviewer_id: i32, username: &str, review_id: i32) -> PathBuf {
     Config::get()
         .review_image_storage_path
-        .join(format!("{}/{}/{}", product_id, format!("{}_{}", reviewer_id, username), review_id))
+        .join(format!("reviews/{}/{}/{}", product_id, format!("{}_{}", reviewer_id, username), review_id))
 }
 
 fn get_image_path(product_id: i32, reviewer_id: i32, username: &str, review_id: i32, filename: &str) -> PathBuf {
@@ -143,6 +144,15 @@ pub async fn create_review(
             Some(json!({ "message": e.to_string() })),
         )
     })?;
+
+    if payload.review_status == "Pending" {
+        notify_review_pending_to_team_leads(
+            &db_pool,
+            review.id,
+            user_id,
+            payload.product_id,
+        ).await.ok();
+    }
 
     Ok(ApiResponse::success(
         StatusCode::CREATED,
@@ -321,17 +331,32 @@ pub async fn get_reviews_for_product(
 )]
 pub async fn update_review(
     State(db_pool): State<PgPool>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     AxumPath(review_id): AxumPath<i32>,
     Json(payload): Json<UpdateReview>,
 ) -> Result<ApiResponse<()>, ApiResponse<()>> {
+    // Fetch review + product site_id
+    let review = sqlx::query!(
+        r#"
+        SELECT r.reviewer_id, r.review_status, r.product_id, p.site_id, r.product_status as review_product_status
+        FROM reviews r
+        JOIN products p ON r.product_id = p.id
+        WHERE r.id = $1
+        "#,
+        review_id
+    )
+    .fetch_one(&db_pool)
+    .await
+    .map_err(|_| ApiResponse::<()>::error(StatusCode::NOT_FOUND, "Review not found", None))?;
+
+    // Apply database update
     let result = sqlx::query!(
         r#"
         UPDATE reviews
-           SET review_status = COALESCE($1, review_status),
-               product_status = COALESCE($2, product_status),
-               updated_at = NOW()
-         WHERE id = $3
+        SET review_status = COALESCE($1, review_status),
+            product_status = COALESCE($2, product_status),
+            updated_at = NOW()
+        WHERE id = $3
         "#,
         payload.review_status,
         payload.product_status,
@@ -339,11 +364,11 @@ pub async fn update_review(
     )
     .execute(&db_pool)
     .await
-    .map_err(|_| {
+    .map_err(|e| {
         ApiResponse::<()>::error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Failed to update review",
-            None,
+            Some(json!({ "message": e.to_string() })),
         )
     })?;
 
@@ -351,12 +376,14 @@ pub async fn update_review(
         return Err(ApiResponse::<()>::error(StatusCode::NOT_FOUND, "Review not found", None));
     }
 
-    if let Some(new_content) = payload.content {
-        let review_record = sqlx::query!("SELECT review_path FROM reviews WHERE id = $1", review_id)
+    // Update content if provided
+    if let Some(new_content) = &payload.content {
+        let path = sqlx::query!("SELECT review_path FROM reviews WHERE id = $1", review_id)
             .fetch_one(&db_pool)
             .await
             .map_err(|_| ApiResponse::<()>::error(StatusCode::NOT_FOUND, "Review not found", None))?;
-        fs::write(&review_record.review_path, new_content)
+
+        fs::write(&path.review_path, new_content)
             .await
             .map_err(|e| {
                 ApiResponse::<()>::error(
@@ -365,6 +392,79 @@ pub async fn update_review(
                     Some(json!({ "message": e.to_string() })),
                 )
             })?;
+    }
+
+    // Notification logic
+    if let Some(ref status) = payload.review_status {
+        info!("Review status changed to: {}", status);
+        match status.as_str() {
+            "Pending" => {
+                notify_review_pending_to_team_leads(
+                    &db_pool,
+                    review_id,
+                    review.reviewer_id,
+                    review.product_id,
+                ).await.ok();
+            }
+
+            "Approved" => {
+                // When a review is approved, update the product status based on the review's product_status
+                let product_status = payload.product_status.as_ref().unwrap_or(&review.review_product_status);
+                
+                // Update the product with the status from the review
+                let update_result = sqlx::query!(
+                    r#"
+                    UPDATE products
+                    SET status = $1
+                    WHERE id = $2
+                    "#,
+                    product_status,
+                    review.product_id
+                )
+                .execute(&db_pool)
+                .await;
+                
+                if let Err(e) = update_result {
+                    // Log the error but don't fail the review update
+                    error!("Failed to update product status: {}", e);
+                } else {
+                    info!("Product status updated to: {}", product_status);
+                }
+                
+                // Send notification to the reviewer
+                NotificationBuilder::new(
+                    format!("Review {}: {}", status, review.site_id),
+                    notification_types::REVIEW_REQUEST,
+                )
+                .body(format!(
+                    "Your review (#{review_id}) for site '{}' was marked as {}.",
+                    review.site_id, status
+                ))
+                .target_user(review.reviewer_id)
+                .action("review", json!({ "review_id": review_id }))
+                .send(&db_pool)
+                .await
+                .ok();
+            }
+
+            "Rejected" => {
+                NotificationBuilder::new(
+                    format!("Review {}: {}", status, review.site_id),
+                    notification_types::REVIEW_REQUEST,
+                )
+                .body(format!(
+                    "Your review (#{review_id}) for site '{}' was marked as {}.",
+                    review.site_id, status
+                ))
+                .target_user(review.reviewer_id)
+                .action("review", json!({ "review_id": review_id }))
+                .send(&db_pool)
+                .await
+                .ok();
+            }
+
+            _ => {}
+        }
     }
 
     Ok(ApiResponse::success(StatusCode::OK, "Review updated successfully", ()))
@@ -661,6 +761,60 @@ pub async fn delete_review_image(
     ))
 }
 
+#[axum::debug_handler]
+#[utoipa::path(
+    get,
+    path = "/reviews/team_lead/pending",
+    tag = "Reviews",
+    responses(
+        (status = 200, description = "Successfully retrieved pending reviews for team lead", body = Vec<ReviewResponse>),
+        (status = 404, description = "No pending reviews found"),
+        (status = 500, description = "Internal Server Error")
+    ),
+    security(
+        ("bearerAuth" = [])
+    )
+)]
+pub async fn get_pending_reviews_for_team_lead(
+    State(db_pool): State<PgPool>,
+    Extension(claims): Extension<Claims>,
+) -> Result<ApiResponse<Vec<Review>>, ApiResponse<()>> {
+    let team_lead_id = claims.sub.parse::<i32>().map_err(|_| {
+        ApiResponse::<()>::error(StatusCode::UNAUTHORIZED, "Invalid user ID in token", None)
+    })?;
+
+    // Fetch pending reviews for all teams the user is a team lead for.
+    let reviews = sqlx::query_as!(
+        Review,
+        r#"
+        SELECT r.id, r.product_id, r.reviewer_id, r.review_status, r.product_status, r.review_path,
+               r.created_at, r.updated_at
+        FROM reviews r
+        INNER JOIN products p ON r.product_id = p.id
+        INNER JOIN product_assignments pa ON pa.product_id = p.id
+        INNER JOIN teams t ON pa.team_id = t.id
+        INNER JOIN team_members tm ON tm.team_id = t.id
+        WHERE tm.user_id = $1 AND tm.role = 'team_lead' AND r.review_status = 'Pending'
+        "#,
+        team_lead_id
+    )
+    .fetch_all(&db_pool)
+    .await
+    .map_err(|_| {
+        ApiResponse::<()>::error(
+            StatusCode::NOT_FOUND,
+            "No pending reviews found for this team lead",
+            None,
+        )
+    })?;
+
+    Ok(ApiResponse::success(
+        StatusCode::OK,
+        "Pending reviews retrieved successfully",
+        reviews,
+    ))
+}
+
 use utoipa::OpenApi;
 
 
@@ -676,7 +830,8 @@ use utoipa::OpenApi;
         upload_review_image,
         get_review_image,
         get_all_review_images,
-        delete_review_image
+        delete_review_image,
+        get_pending_reviews_for_team_lead
     ),
     components(
         schemas(ReviewResponse, NewReview, UpdateReview, Review, ReviewImageUploadSchema)

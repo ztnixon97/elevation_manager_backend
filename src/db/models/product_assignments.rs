@@ -22,7 +22,7 @@ pub struct ProductAssignment {
 #[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct NewProductAssignment {
     pub product_id: i32,
-    pub user_id: i32,
+    pub user_id: Option<i32>,
     pub team_id: Option<i32>,
     pub assignment_type: String,
     pub status: Option<String>, // default is "active"
