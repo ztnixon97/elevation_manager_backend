@@ -2,3 +2,5 @@
 .env
 /1
 /logs
+/reviews/*
+/reviews
